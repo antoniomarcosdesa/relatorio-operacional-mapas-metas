@@ -123,7 +123,7 @@ def calcular_simulacoes(operacao: pd.DataFrame, equipamentos: pd.DataFrame, rotu
     return por_proc, jornada
 
 
-def preparar_dados(secoes, cliente, rotulo_proc, rotulo_equip):
+def preparar_dados(secoes, cliente, rotulo_proc, rotulo_equip, comparacao=None):
     op, par = secoes["Operacao"], secoes["Paradas"]
     eq, opr = secoes["Equipamentos_Op"], secoes["Operadores_Op"]
 
@@ -138,9 +138,27 @@ def preparar_dados(secoes, cliente, rotulo_proc, rotulo_equip):
         eq2.insert(1, "Equipamento", eq2["Equipamento (código)"].map(rotulo_equip))
         eq2 = eq2.drop(columns=["Equipamento (código)"])
     por_proc, jornada = calcular_simulacoes(op, eq, rotulo_proc, rotulo_equip)
+    extra = {}
+    if comparacao:
+        import metas as _m
+        cp, ce = comparacao
+        sim_meta = _m.simulacoes_meta(cp, op, rotulo_proc) if cp is not None else []
+        por_nome = {x.get("processo"): x for x in por_proc}
+        for sm in sim_meta:
+            por_nome.setdefault(sm["processo"], {"processo": sm["processo"]}).update(sm)
+        por_proc = list(por_nome.values())
+        if cp is not None:
+            extra["comparacao_metas_processo"] = _registros(cp.drop(columns=["Código processo"], errors="ignore"))
+        if ce is not None and not ce.empty:
+            extra["comparacao_metas_equipamentos"] = _registros(
+                ce.assign(Equipamento=ce["Equipamento (código)"].map(rotulo_equip), Processo=ce["Código processo"].map(rotulo_proc))
+                  .drop(columns=["Código processo", "Equipamento (código)"]))
+    obs = "Motor ligado é ESTIMADO (tempo com RPM > 0). " + (
+        "Há metas operacionais cadastradas: use as comparações de meta fornecidas." if comparacao else "Não há metas cadastradas.")
     return {
         "cliente": cliente,
-        "observacao": "Motor ligado é ESTIMADO (tempo com RPM > 0). Não há metas cadastradas.",
+        "observacao": obs,
+        **extra,
         "resumo_processos": _registros(com_rotulos(op), ["Processo"] + COLS_OPERACAO),
         "paradas": _registros(com_rotulos(par).head(400)) if not par.empty else [],
         "equipamentos": _registros(eq2, ["Processo", "Equipamento"] + COLS_EQUIP_OPER) if not eq2.empty else [],
@@ -154,7 +172,33 @@ def preparar_dados(secoes, cliente, rotulo_proc, rotulo_equip):
 # PROMPT
 # ------------------------------------------------------------
 
-def criar_prompt(dados):
+SEM_METAS = '''============================================================
+REGRA FUNDAMENTAL: NÃO HÁ METAS
+============================================================
+Nenhuma meta está cadastrada. NÃO compare com metas, NÃO invente metas, NÃO cite "meta".
+A leitura é sobre o desempenho REALIZADO e a comparação RELATIVA entre equipamentos e entre
+operadores do mesmo processo. "Motor ligado" é estimado (tempo com RPM > 0); não trate isso
+como erro, apenas não dê precisão exagerada.
+
+'''
+
+COM_METAS = '''============================================================
+REGRA FUNDAMENTAL: HÁ METAS OPERACIONAIS
+============================================================
+Use SOMENTE as metas presentes em "comparacao_metas_processo" e/ou "comparacao_metas_equipamentos" (o que existir)
+(campos Meta, Realizado, Variação, Status). NÃO invente metas. Indicador sem meta: leia apenas o
+realizado. Meta do equipamento tem prioridade sobre a da operação. Classifique com as palavras do
+Status: OK = dentro da meta; ABAIXO DA META = fora (sempre dizer o tamanho do desvio); ATENÇÃO/FORA DO
+ALVO só para RPM (até 50 de diferença = OK, até 100 = atenção, acima de 100 = fora do alvo).
+Para área, compare o realizado com "Meta 7 dias" (esperado no período). Operadores NÃO têm meta:
+compare-os apenas com os demais operadores e com a meta do equipamento que operaram.
+"Motor ligado" é estimado (tempo com RPM > 0).
+
+'''
+
+
+def criar_prompt(dados, com_metas=False):
+    bloco_metas = COM_METAS if com_metas else SEM_METAS
     dados_json = json.dumps(dados, ensure_ascii=False, indent=1)
     return f"""
 Você é um ANALISTA OPERACIONAL SÊNIOR especializado em operações agrícolas mecanizadas.
@@ -164,20 +208,13 @@ resultados, priorizar pontos de atenção e recomendar ações práticas.
 
 CLIENTE: {dados.get('cliente', '')}
 
-============================================================
-REGRA FUNDAMENTAL: NÃO HÁ METAS
-============================================================
-Nenhuma meta está cadastrada. NÃO compare com metas, NÃO invente metas, NÃO cite "meta".
-A leitura é sobre o desempenho REALIZADO e a comparação RELATIVA entre equipamentos e entre
-operadores do mesmo processo. "Motor ligado" é estimado (tempo com RPM > 0); não trate isso
-como erro, apenas não dê precisão exagerada.
-
+{bloco_metas}
 ============================================================
 DIREÇÃO DOS INDICADORES
 ============================================================
 Rendimento real, eficiência geral, eficiência do motor, área: MAIOR = melhor.
 Consumo (L/ha), motor ligado parado, sem apontamento: MENOR = melhor.
-RPM: sem meta, use apenas para comparar equipamentos (ex.: RPM de deslocamento muito acima
+RPM: sem meta cadastrada, use apenas para comparar equipamentos (ex.: RPM de deslocamento muito acima
 dos demais) — não classifique como bom/ruim sozinho.
 Jornada: INFORMATIVA, não classifique como boa ou ruim.
 
@@ -298,15 +335,15 @@ def _consultar(prompt, chave, log):
     raise RuntimeError(f"falha após {MAX_TENTATIVAS} tentativas: {str(ultimo)[:300]}")
 
 
-def gerar_analise(secoes, cliente, rotulo_proc, rotulo_equip, pasta_saida, log=print):
+def gerar_analise(secoes, cliente, rotulo_proc, rotulo_equip, pasta_saida, log=print, comparacao=None):
     """Devolve o dict da análise (e grava resultados/analises_ia.json) ou None se indisponível."""
     chave = _ler_chave()
     if not chave:
         log("  IA: GEMINI_API_KEY não configurada — o PDF sairá sem a análise de IA.")
         return None
     try:
-        dados = preparar_dados(secoes, cliente, rotulo_proc, rotulo_equip)
-        resultado = _consultar(criar_prompt(dados), chave, log)
+        dados = preparar_dados(secoes, cliente, rotulo_proc, rotulo_equip, comparacao)
+        resultado = _consultar(criar_prompt(dados, bool(comparacao)), chave, log)
         for p in resultado.get("processos", []):
             for c in CAMPOS:
                 p[c] = p.get(c) or ""

@@ -29,7 +29,7 @@ from reportlab.platypus import (
 )
 
 from gerar_mapas_velocidade_talhao import gerar_mapas_velocidade, ColunaGeometriaAusente
-from dados_cliente import carregar_cliente
+from dados_cliente import carregar_cliente, _chave as _chave_dc, PASTA_CLIENTE as _PASTA_CLIENTE
 
 ARQUIVO_ENTRADA = Path("resultados/qualidade_operacional_processo_talhao.xlsx")
 PASTA_RELATORIOS = Path("relatorios")
@@ -472,7 +472,12 @@ def paginas_processo(cliente_nome, ini, fim, cod_processo, processo, base_talhao
     tabela + mapas de velocidade lado a lado + textos de análise."""
     plantio = dados_cliente.processo_eh_plantio(cod_processo)
     todas_colunas = montar_colunas(base_talhao, plantio)
-    linhas = [base_talhao.iloc[i:i + 2] for i in range(0, len(base_talhao), 2)]
+    # imagens_por_talhao: {talhão: [png, ...]} (aceita também um caminho único)
+    imagens_por_talhao = {t: (c if isinstance(c, (list, tuple)) else [c]) for t, c in imagens_por_talhao.items()}
+    # 2 indicadores escolhidos no site -> 2 mapas por talhão: 1 talhão por página, mapas lado a lado
+    dois_mapas = any(len(v) >= 2 for v in imagens_por_talhao.values())
+    passo = 1 if dois_mapas else 2
+    linhas = [base_talhao.iloc[i:i + passo] for i in range(0, len(base_talhao), passo)]
     story = []
 
     for idx, grupo in enumerate(linhas):
@@ -488,13 +493,19 @@ def paginas_processo(cliente_nome, ini, fim, cod_processo, processo, base_talhao
         # ---- mapas lado a lado ----
         celulas_mapa = []
         for t in grupo["Talhão"]:
-            caminho = imagens_por_talhao.get(str(t))
-            celulas_mapa.append(
-                _imagem_proporcional(caminho, LARGURA_MAPA_MM - 4, ALTURA_MAPA_MM) if caminho
-                else Paragraph("Mapa indisponível (CSV sem coordenadas)", STYLE_TXT)
-            )
-        unico = len(celulas_mapa) == 1
-        tb_mapas = Table([celulas_mapa], colWidths=[278 * mm] if unico else [139 * mm, 139 * mm])
+            caminhos = imagens_por_talhao.get(str(t), [])
+            if dois_mapas:  # os 2 mapas (um por indicador) do mesmo talhão
+                for c in caminhos[:2]:
+                    celulas_mapa.append(_imagem_proporcional(c, LARGURA_MAPA_MM - 4, ALTURA_MAPA_MM))
+                while len(celulas_mapa) < 2:
+                    celulas_mapa.append(Paragraph("Mapa indisponível (sem dado do indicador escolhido)", STYLE_TXT))
+            else:
+                celulas_mapa.append(
+                    _imagem_proporcional(caminhos[0], LARGURA_MAPA_MM - 4, ALTURA_MAPA_MM) if caminhos
+                    else Paragraph("Mapa indisponível (CSV sem coordenadas ou sem dado do indicador)", STYLE_TXT)
+                )
+        unico = len(grupo) == 1  # textos: 1 talhão -> coluna única
+        tb_mapas = Table([celulas_mapa], colWidths=[139 * mm, 139 * mm] if len(celulas_mapa) == 2 else [278 * mm])
         tb_mapas.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
@@ -526,7 +537,7 @@ def paginas_processo(cliente_nome, ini, fim, cod_processo, processo, base_talhao
         story.append(Paragraph(
             "Médias só no estado Efetivo e só entre equipamentos que têm o dado (0/-1 = sem dado); indicadores por ha ponderados pela área. "
             "Variação = dispersão típica (robusta, ignora picos isolados) em relação à média: baixa &lt;5% (verde), moderada 5–10% (laranja), alta &gt;10% (vermelho). "
-            "Mapas (só estado Efetivo): por padrão velocidade; havendo densidade de plantio, produtividade, taxa de sólidos ou vazão no talhão, mostram esse indicador (cinza = sem dado). Azul = valor menor, vermelho = valor maior.",
+            "Mapas (só estado Efetivo): indicador(es) escolhido(s) para o grupo de operação; sem escolha, velocidade ou, havendo, densidade de plantio, produtividade, taxa de sólidos ou vazão (cinza = equipamento sem dado). Azul = valor menor, vermelho = valor maior.",
             STYLE_TXT_NOTA,
         ))
         if idx < len(linhas) - 1:
@@ -697,18 +708,38 @@ def construir_pdf(caminho_csv=None):
         nome = dados_cliente.rotulo_equip(cod)
         return str(cod) if nome == str(cod) else f"{cod} - {nome}"
 
+    comparacao = None
+    if secoes is not None:
+        from opcoes_mapa import carregar_opcoes_relatorio
+        _o = carregar_opcoes_relatorio()
+        _usa_op = bool(_o.get("comparar_metas_operacao", _o.get("comparar_metas")))
+        _usa_eq = bool(_o.get("comparar_metas_equipamentos", _o.get("comparar_metas")))
+        if _usa_op or _usa_eq:
+            import metas as _metas
+            print("Comparação com metas operacionais ligada.")
+            m = _metas.carregar_metas(_PASTA_CLIENTE / _metas.NOME_ARQUIVO)
+            if m is not None:
+                try:
+                    comparacao = _metas.calcular_comparacao(
+                        secoes, m, rotulo_proc, lambda c: dados_cliente.processos.get(_chave_dc(c), ""),
+                        rotulo_equip, usar_op=_usa_op, usar_eq=_usa_eq)
+                    cp, ce = comparacao
+                    comparacao = (cp if _usa_op else None, ce if _usa_eq else None)
+                    print(f"  Metas aplicadas: operação={'sim' if _usa_op else 'não'}, equipamentos={'sim' if _usa_eq else 'não'}.")
+                except Exception as e:  # noqa: BLE001
+                    print(f"  AVISO: falha ao comparar com metas ({type(e).__name__}: {e}) — relatório sem comparação.")
     analise, usar_ia = None, False
     if secoes is not None:
         usar_ia = bool(analise_ia._ler_chave())
         if usar_ia:
             print("Gerando análise de IA (Gemini)...")
-            analise = analise_ia.gerar_analise(secoes, CLIENTE_NOME, rotulo_proc, rotulo_equip, ARQUIVO_ENTRADA.parent)
+            analise = analise_ia.gerar_analise(secoes, CLIENTE_NOME, rotulo_proc, rotulo_equip, ARQUIVO_ENTRADA.parent, comparacao=comparacao)
         else:
             print("Aviso: GEMINI_API_KEY não configurada — o PDF sairá sem as páginas de IA.")
 
     story = []
     if secoes is not None:
-        story.extend(sec.pagina_resumo_executivo(CLIENTE_NOME, ini, fim, secoes, analise, rotulo_proc))
+        story.extend(sec.pagina_resumo_executivo(CLIENTE_NOME, ini, fim, secoes, analise, rotulo_proc, comparacao))
     else:
         story.extend(pagina_resumo_geral(CLIENTE_NOME, ini, fim, resumo_processo, resumo_talhao, dados_cliente))
     story.append(PageBreak())
@@ -718,7 +749,7 @@ def construir_pdf(caminho_csv=None):
     for i, cod in enumerate(codigos):
         if secoes is not None:
             story.extend(sec.paginas_processo(cod, CLIENTE_NOME, ini, fim, secoes, analise, rotulo_proc, rotulo_equip,
-                                              PASTA_RELATORIOS / "_graficos_tmp", usar_ia))
+                                              PASTA_RELATORIOS / "_graficos_tmp", usar_ia, comparacao))
             if cod in codigos_talhao:
                 story.append(PageBreak())
         if cod in codigos_talhao:

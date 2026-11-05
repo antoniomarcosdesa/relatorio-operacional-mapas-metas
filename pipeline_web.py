@@ -1,5 +1,6 @@
 # Executa o pipeline (processar + PDF) numa pasta temporária isolada por execução e,
 # opcionalmente, envia o PDF ao Telegram. Usado pelo app.py (site).
+import json
 import os
 import shutil
 import subprocess
@@ -10,6 +11,11 @@ from pathlib import Path
 RAIZ = Path(__file__).resolve().parent
 PASTA_SCRIPTS = RAIZ / "scripts"
 PASTA_CLIENTES = RAIZ / "clientes"
+
+
+def tem_metas(cliente: str) -> bool:
+    pasta = PASTA_CLIENTES / cliente
+    return pasta.exists() and any(a.name.lower() == "metas_operacionais.xlsx" for a in pasta.glob("*.xlsx"))
 
 
 def listar_clientes():
@@ -27,7 +33,7 @@ def _rodar(script, args, cwd, log):
     return proc.returncode == 0
 
 
-def gerar_relatorio(csv_bytes: bytes, cliente: str, enviar_telegram: bool, log=print):
+def gerar_relatorio(csv_bytes: bytes, cliente: str, enviar_telegram: bool, log=print, opcoes_mapa=None, comparar_metas=None):
     """Devolve (ok, mensagem, caminho_pdf_ou_None, bytes_pdf_ou_None)."""
     with tempfile.TemporaryDirectory(prefix="rel_") as tmp:
         tmp = Path(tmp)
@@ -36,6 +42,12 @@ def gerar_relatorio(csv_bytes: bytes, cliente: str, enviar_telegram: bool, log=p
         origem = PASTA_CLIENTES / cliente
         for arq in [a for e in ("*.xlsx", "*.kml", "*.geojson", "*.json", "*.yms", "*.ymx") for a in origem.glob(e)]:
             shutil.copy(arq, tmp / "cliente" / arq.name)
+        if opcoes_mapa:  # {grupo: [indicadores]} escolhido no site (opcional)
+            (tmp / "opcoes_mapa.json").write_text(json.dumps(opcoes_mapa, ensure_ascii=False), encoding="utf-8")
+        if comparar_metas:  # {"operacao": bool, "equipamentos": bool} — botão "Comparar com metas operacionais"
+            (tmp / "opcoes_relatorio.json").write_text(json.dumps({
+                "comparar_metas_operacao": bool(comparar_metas.get("operacao")),
+                "comparar_metas_equipamentos": bool(comparar_metas.get("equipamentos"))}), encoding="utf-8")
         csv = tmp / "dados_brutos" / "mapa_analitico.csv"
         csv.write_bytes(csv_bytes)
 

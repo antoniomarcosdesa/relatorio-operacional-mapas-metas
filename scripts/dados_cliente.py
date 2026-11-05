@@ -62,6 +62,7 @@ class DadosCliente:
         self._ambiguos = set()
         self.equip = {}       # chave -> frota/nome
         self.processos = {}   # chave -> descrição do processo
+        self.grupos = {}      # chave -> grupo de operação informado no de-para (texto livre)
         self.poligonos = []   # [(nomes_normalizados:set, [anéis (lon,lat)])]
         self._indice_kml = {}
         self.poligonos_chave = {}  # 'fazenda-zona-talhão' -> anéis (GeoJSON)
@@ -103,6 +104,13 @@ class DadosCliente:
     def processo_eh_plantio(self, cod) -> bool:
         """True se a descrição do processo (planilha do cliente) tem 'plantio'."""
         return "plantio" in _norm(self.processos.get(_chave(cod), ""))
+
+    def grupo_processo(self, cod) -> str:
+        """Chave do grupo de operação (PLANTIO, COLHEITA, PULVERIZACAO, PREPARO_SOLO, LANCO) ou ''.
+        Vem da coluna 'grupo' do de-para; sem ela, é deduzido da descrição do processo."""
+        from opcoes_mapa import normalizar_grupo
+        k = _chave(cod)
+        return normalizar_grupo(self.grupos.get(k, "")) or normalizar_grupo(self.processos.get(k, ""))
 
     def rotulo_equip(self, cod) -> str:
         return self.equip.get(_chave(cod), "") or str(cod)
@@ -174,7 +182,16 @@ class DadosCliente:
                         cod, nome = _limpa(r[cod_p]), _limpa(r[nome_p])
                         if cod and nome:
                             self.processos.setdefault(_chave(cod), nome)
-                    print(f"  Processos (aba '{aba}'): código='{cod_p}' -> descrição='{nome_p}'")
+                    col_g = next((c for c, n in cols.items() if c not in (cod_p, nome_p) and n in (
+                        "grupo", "grupo_operacao", "grupo_de_operacao", "grupo_processo", "grupo_do_processo",
+                        "grupo_de_operacoes", "tipo_operacao", "tipo_de_operacao")), None)
+                    if col_g is not None:
+                        for _, r in df.iterrows():
+                            cod, g = _limpa(r[cod_p]), _limpa(r[col_g])
+                            if cod and g:
+                                self.grupos.setdefault(_chave(cod), g)
+                    extra = f" + grupo='{col_g}'" if col_g else " (sem coluna 'grupo': deduzido da descrição)"
+                    print(f"  Processos (aba '{aba}'): código='{cod_p}' -> descrição='{nome_p}'{extra}")
 
             # ---- equipamento ----
             cod_e = next((c for c, n in cols.items() if n in (
@@ -324,7 +341,7 @@ def carregar_cliente(pasta=PASTA_CLIENTE) -> DadosCliente:
         return dados
     print("Dados do cliente (pasta 'cliente'):")
     excels = [p for p in sorted(pasta.glob("*.xlsx"))
-              if not p.name.startswith("~$")]
+              if not p.name.startswith("~$") and not p.name.lower().startswith("metas")]
     kmls = sorted(pasta.glob("*.kml"))
     geojsons = sorted(list(pasta.glob("*.geojson")) + list(pasta.glob("*.json")))
     for yms in sorted(pasta.glob("*.yms")):

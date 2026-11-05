@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 
 from leitura_csv import ler_csv_bruto, parse_datas, achar_coluna
 from dados_cliente import carregar_cliente
+from opcoes_mapa import carregar_opcoes, INDICADORES, GRUPOS
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.colors import LinearSegmentedColormap
@@ -95,7 +96,8 @@ def carregar_base(caminho_csv: str) -> pd.DataFrame:
     df["vl_tempo_segundos"] = pd.to_numeric(df["vl_tempo_segundos"], errors="coerce").fillna(0)
     df["vl_hectares_hora"] = pd.to_numeric(df["vl_hectares_hora"], errors="coerce").fillna(0)
     df["vl_velocidade"] = pd.to_numeric(df["vl_velocidade"], errors="coerce")
-    for col, *_ in INDICADORES_MAPA:
+    colunas_ind = [c for c, *_ in INDICADORES_MAPA] + [v[0] for v in INDICADORES.values() if v[0] != "vl_velocidade"]
+    for col in dict.fromkeys(colunas_ind):
         c = achar_coluna(df, col)
         df[col] = pd.to_numeric(df[c], errors="coerce") if c else np.nan
     df["vl_rendimento_colheita"] = df["vl_rendimento_colheita"] * (1000.0 / 60.0)  # t/ha -> sacas/ha (60 kg)
@@ -166,7 +168,7 @@ def _br(v, casas=1):
     return f"{v:,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def desenhar_e_salvar(df, cd_operacao, cd_talhao, caminho_saida, vmax_percentil=97, cliente=None):
+def desenhar_e_salvar(df, cd_operacao, cd_talhao, caminho_saida, vmax_percentil=97, cliente=None, indicador_escolhido=None):
     sub, x, y, lon0, lat0 = preparar_talhao(df, cd_operacao, cd_talhao)
     if sub.empty:
         return None
@@ -175,12 +177,19 @@ def desenhar_e_salvar(df, cd_operacao, cd_talhao, caminho_saida, vmax_percentil=
 
     # Indicador do mapa: 1º da lista com algum dado válido (>0) neste talhão/processo
     indicador = None
-    for col, nome_ind, un_ind, so_plantio in INDICADORES_MAPA:
-        if so_plantio and not (cliente is not None and cliente.processo_eh_plantio(cd_operacao)):
-            continue
-        if (sub[col] > 0).any():
-            indicador = (col, nome_ind, un_ind)
-            break
+    if indicador_escolhido:  # escolha feita no site (opcoes_mapa.json): usa só esse indicador
+        col, nome_ind, un_ind = INDICADORES[indicador_escolhido]
+        if not (sub[col] > 0).any():
+            print(f"  AVISO: sem dado de {nome_ind} no Processo {cd_operacao} / Talhão {cd_talhao} — mapa não gerado.")
+            return None
+        indicador = (col, nome_ind, un_ind)
+    else:
+        for col, nome_ind, un_ind, so_plantio in INDICADORES_MAPA:
+            if so_plantio and not (cliente is not None and cliente.processo_eh_plantio(cd_operacao)):
+                continue
+            if (sub[col] > 0).any():
+                indicador = (col, nome_ind, un_ind)
+                break
     if indicador:
         vel = sub[indicador[0]].where(sub[indicador[0]] > 0).to_numpy()  # sem dado (<=0) -> NaN
     else:
@@ -268,7 +277,7 @@ def desenhar_e_salvar(df, cd_operacao, cd_talhao, caminho_saida, vmax_percentil=
 
     area = sub.loc[sub["cd_estado"] == "E", "area_ha"].sum()
     media_ind = float(np.nanmean(vel_validas)) if len(vel_validas) else float("nan")
-    rotulo_ind = f"{indicador[1]} méd. {_br(media_ind, 0 if indicador[2] == 'sem./ha' else 1)} {indicador[2]}" if indicador \
+    rotulo_ind = f"{indicador[1]} méd. {_br(media_ind, 0 if indicador[2] in ('sem./ha', 'RPM') else 1)} {indicador[2]}" if indicador \
         else f"méd. {_br(sub['vl_velocidade'].mean(), 1)} km/h"
     ax.set_title(
         f"Talhão {cliente.rotulo_talhao(cd_talhao) if cliente else cd_talhao}  ·  "
@@ -289,12 +298,15 @@ def desenhar_e_salvar(df, cd_operacao, cd_talhao, caminho_saida, vmax_percentil=
 # ------------------------------------------------------------
 
 def gerar_mapas_velocidade(caminho_csv, pasta_saida="relatorios/mapas_velocidade"):
-    """Gera 1 PNG (só velocidade) por combinação Processo x Talhão
-    > área mínima. Devolve {(cd_operacao, talhao_str): caminho_png}."""
+    """Gera os PNGs (só estado Efetivo) por combinação Processo x Talhão > área mínima.
+    Sem escolha em opcoes_mapa.json: 1 mapa automático (indicador disponível ou velocidade).
+    Com escolha para o grupo do processo: 1 ou 2 mapas, um por indicador escolhido.
+    Devolve {(cd_operacao, talhao_str): [caminho_png, ...]}."""
     pasta_saida = Path(pasta_saida)
     pasta_saida.mkdir(exist_ok=True, parents=True)
 
     cliente = carregar_cliente()
+    opcoes = carregar_opcoes()
     df = carregar_base(caminho_csv)
     cliente.registrar_chaves(df["cd_talhao"].unique())
     validos = combinacoes_validas(df)
@@ -302,11 +314,22 @@ def gerar_mapas_velocidade(caminho_csv, pasta_saida="relatorios/mapas_velocidade
     imagens = {}
     for _, row in validos.iterrows():
         cd_operacao, cd_talhao = row["cd_operacao"], row["cd_talhao"]
-        caminho = pasta_saida / f"mapa_vel_proc{cd_operacao}_talhao{cd_talhao}.png"
-        resultado = desenhar_e_salvar(df, cd_operacao, cd_talhao, caminho, cliente=cliente)
-        if resultado is not None:
-            imagens[(cd_operacao, str(cd_talhao))] = resultado
-            print(f"Mapa de velocidade: Processo {cd_operacao} / Talhão {cd_talhao} -> {caminho}")
+        escolhidos = opcoes.get(cliente.grupo_processo(cd_operacao), [])
+        caminhos = []
+        if escolhidos:
+            for ind in escolhidos:
+                caminho = pasta_saida / f"mapa_{ind.lower()}_proc{cd_operacao}_talhao{cd_talhao}.png"
+                r = desenhar_e_salvar(df, cd_operacao, cd_talhao, caminho, cliente=cliente, indicador_escolhido=ind)
+                if r is not None:
+                    caminhos.append(r)
+        else:
+            caminho = pasta_saida / f"mapa_vel_proc{cd_operacao}_talhao{cd_talhao}.png"
+            r = desenhar_e_salvar(df, cd_operacao, cd_talhao, caminho, cliente=cliente)
+            if r is not None:
+                caminhos.append(r)
+        if caminhos:
+            imagens[(cd_operacao, str(cd_talhao))] = caminhos
+            print(f"Mapa(s): Processo {cd_operacao} / Talhão {cd_talhao} -> {len(caminhos)} arquivo(s)")
 
     return imagens
 

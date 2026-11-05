@@ -30,3 +30,7 @@ Depois de alterar, faça commit no GitHub; o site se atualiza sozinho.
 - O bot precisa ser administrador do grupo (permissão de enviar arquivos).
 - Plano gratuito: memória limitada (~1 GB). CSV de ~470 mil linhas usou ~870 MB; até ~150 mil linhas usa ~300 MB.
 - O app "dorme" sem uso; a primeira abertura pode levar alguns segundos.
+
+## Metas operacionais
+Para habilitar o botão "Comparar com metas operacionais" de um cliente, coloque `metas_operacionais.xlsx`
+dentro de `clientes/<nome>/` no GitHub (abas "Metas da Operação" e "Metas por Equipamento"). Sem o arquivo o botão fica desabilitado.
