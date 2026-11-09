@@ -40,7 +40,7 @@ def gerar_relatorio(csv_bytes: bytes, cliente: str, enviar_telegram: bool, log=p
         for d in ("dados_brutos", "resultados", "relatorios", "cliente"):
             (tmp / d).mkdir()
         origem = PASTA_CLIENTES / cliente
-        for arq in [a for e in ("*.xlsx", "*.kml", "*.geojson", "*.json", "*.yms", "*.ymx") for a in origem.glob(e)]:
+        for arq in [a for e in ("*.xlsx", "*.kml", "*.geojson", "*.json", "*.yms", "*.ymx", "*.mbtiles") for a in origem.glob(e)]:
             shutil.copy(arq, tmp / "cliente" / arq.name)
         if opcoes_mapa:  # {grupo: [indicadores]} escolhido no site (opcional)
             (tmp / "opcoes_mapa.json").write_text(json.dumps(opcoes_mapa, ensure_ascii=False), encoding="utf-8")

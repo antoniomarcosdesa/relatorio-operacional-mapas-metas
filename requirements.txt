@@ -8,3 +8,4 @@ pillow>=10,<14
 requests>=2.31,<3
 google-genai>=1.0
 pyarrow<25
+shapely<3
