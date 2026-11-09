@@ -240,7 +240,7 @@ def pagina_resumo_geral(cliente, ini, fim, resumo_processo, resumo_talhao, dados
 
     cards = [
         caixa("Processos analisados", inteiro(len(resumo_processo)), 66 * mm),
-        caixa("Área total (>20 ha/talhão)", f"{numero(total_area,1)} ha", 66 * mm),
+        caixa("Área total (>5 ha/talhão)", f"{numero(total_area,1)} ha", 66 * mm),
         caixa("Talhões distintos", inteiro(total_talhoes), 66 * mm),
         caixa("Equipamentos distintos", inteiro(total_equip), 66 * mm),
     ]
@@ -252,13 +252,13 @@ def pagina_resumo_geral(cliente, ini, fim, resumo_processo, resumo_talhao, dados
     story.append(cards_tb)
     story.append(Spacer(1, 4 * mm))
 
-    cabecalhos = ["PROCESSO", "TALHÕES (>20 ha)", "ÁREA TOTAL", "EQUIP.", "HORAS EFET.", "VELOC. MÉDIA", "RPM MÉDIO", "CONSUMO MÉDIO"]
+    cabecalhos = ["PROCESSO", "TALHÕES (>5 ha)", "ÁREA TOTAL", "EQUIP.", "HORAS EFET.", "VELOC. MÉDIA", "RPM MÉDIO", "CONSUMO MÉDIO"]
     larguras = [55 * mm, 30 * mm, 30 * mm, 22 * mm, 30 * mm, 30 * mm, 30 * mm, 51 * mm]
     linhas = []
     for _, r in resumo_processo.iterrows():
         linhas.append([
             Paragraph(f"<b>{dados_cliente.rotulo_processo(r['Código processo']) if dados_cliente else r['Processo']}</b>", ParagraphStyle("proc", parent=STYLE_BODY, fontSize=10.5)),
-            inteiro(r["Talhões (>20 ha)"]),
+            inteiro(r["Talhões (>5 ha)"]),
             f"{numero(r['Área operacional (ha)'],1)} ha",
             inteiro(r["Equipamentos"]),
             f"{numero(r['Horas efetivas (h)'],1)} h",
@@ -268,7 +268,7 @@ def pagina_resumo_geral(cliente, ini, fim, resumo_processo, resumo_talhao, dados
         ])
     story.extend(tabela_generica(
         "VISÃO DOS PROCESSOS",
-        "Consolidado de todos os talhões (>20 ha) de cada processo no período.",
+        "Consolidado de todos os talhões (>5 ha) de cada processo no período.",
         cabecalhos, larguras, linhas,
     ))
     story.append(Spacer(1, 3 * mm))
@@ -444,7 +444,7 @@ def tabela_talhoes(grupo, todas_colunas, cliente):
         for col, _, _, casas in todas_colunas:
             valor = r.get(col)
             if col == "Equipamentos (códigos)":
-                frota = ", ".join(cliente.rotulo_equip(e) for e in str(valor).split(", ")) if pd.notna(valor) and valor else "-"
+                frota = ", ".join(str(e).strip() for e in str(valor).split(", ")) if pd.notna(valor) and valor else "-"
                 linha.append(Paragraph(frota, valor_st_frota))
             elif col.endswith("(%)"):
                 linha.append(Paragraph(percentual(valor), valor_st))
