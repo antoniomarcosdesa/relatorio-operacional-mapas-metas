@@ -29,6 +29,7 @@ from reportlab.platypus import (
 )
 
 from gerar_mapas_velocidade_talhao import gerar_mapas_velocidade, ColunaGeometriaAusente
+from opcoes_mapa import escolha_do_processo, especifico_liberado, carregar_opcoes_relatorio
 from dados_cliente import carregar_cliente, _chave as _chave_dc, PASTA_CLIENTE as _PASTA_CLIENTE
 
 ARQUIVO_ENTRADA = Path("resultados/qualidade_operacional_processo_talhao.xlsx")
@@ -321,7 +322,7 @@ def _classe_variacao(cv):
     return "alta", "#DC2626"
 
 
-def textos_talhao(cod_processo, talhao, rotulo, variacao, clima, mostrar_densidade=False):
+def textos_talhao(cod_processo, talhao, rotulo, variacao, clima, mostrar_densidade=False, escolha=None):
     """Parágrafos de análise de um talhão: clima (% do tempo) + variação das médias."""
     itens = [Paragraph(f"Análises — Talhão {rotulo}", STYLE_TXT_TIT)]
     tem = False
@@ -343,7 +344,9 @@ def textos_talhao(cod_processo, talhao, rotulo, variacao, clima, mostrar_densida
 
     v = variacao[(variacao["Código processo"] == cod_processo) & (variacao["Talhão"] == str(talhao))] if len(variacao) else variacao
     for _, r in v.iterrows():
-        if r["Indicador"] == "Densidade de plantio" and not mostrar_densidade:
+        if escolha is None and r["Indicador"] == "Densidade de plantio" and not mostrar_densidade:
+            continue
+        if not especifico_liberado(r["Indicador"], escolha):
             continue
         casas = int(r["Casas"])
         classe, cor = _classe_variacao(r["CV (%)"])
@@ -387,13 +390,15 @@ def texto_temp_motor(cod_processo, temp_equip, cliente):
     )
 
 
-def montar_colunas(base_talhao, mostrar_densidade=False):
+def montar_colunas(base_talhao, mostrar_densidade=False, escolha=None):
     colunas_ctx = [
         ("Área operacional (ha)", "ÁREA", "ha", 1),
         ("Equipamentos (códigos)", "EQUIP. (FROTA)", "", 0),
         ("Horas efetivas (h)", "HORAS EFET.", "h", 1),
         ("Rendimento Real (%)", "RENDIMENTO REAL", "%", 1),
     ]
+    if "Área trabalhada (ha)" in base_talhao and base_talhao["Área trabalhada (ha)"].notna().any():
+        colunas_ctx.insert(1, ("Área trabalhada (ha)", "ÁREA TRAB.", "ha, sem sobrep.", 1))
     # Temperatura do motor NÃO tem coluna (vira texto por equipamento).
     colunas_qual = [
         ("Velocidade média", "VELOCIDADE", "km/h", 2),
@@ -409,7 +414,12 @@ def montar_colunas(base_talhao, mostrar_densidade=False):
     ]
     # Densidade de plantio só aparece em processo de PLANTIO (identificado pela
     # descrição na planilha do cliente) — o dado vem errado em outras operações.
-    colunas_qual = [c for c in colunas_qual if mostrar_densidade or c[0] != "Densidade de plantio"]
+    # Sem escolha (automático): densidade só em processo de plantio. Com escolha no grupo:
+    # só entram os indicadores específicos escolhidos (sementes/taxa/produtividade/vazão).
+    if escolha is None:
+        colunas_qual = [c for c in colunas_qual if mostrar_densidade or c[0] != "Densidade de plantio"]
+    else:
+        colunas_qual = [c for c in colunas_qual if especifico_liberado(c[0], escolha)]
     colunas_qual = [c for c in colunas_qual if c[0] in base_talhao and base_talhao[c[0]].notna().any()]
     colunas_amb = [
         ("Temperatura ambiente média", "TEMP. AMBIENTE", "°C", 1),
@@ -471,7 +481,8 @@ def paginas_processo(cliente_nome, ini, fim, cod_processo, processo, base_talhao
     """Páginas de um processo: 2 talhões por página, cada uma com
     tabela + mapas de velocidade lado a lado + textos de análise."""
     plantio = dados_cliente.processo_eh_plantio(cod_processo)
-    todas_colunas = montar_colunas(base_talhao, plantio)
+    escolha = escolha_do_processo(dados_cliente, cod_processo)
+    todas_colunas = montar_colunas(base_talhao, plantio, escolha)
     # imagens_por_talhao: {talhão: [png, ...]} (aceita também um caminho único)
     imagens_por_talhao = {t: (c if isinstance(c, (list, tuple)) else [c]) for t, c in imagens_por_talhao.items()}
     # 2 indicadores escolhidos no site -> 2 mapas por talhão: 1 talhão por página, mapas lado a lado
@@ -515,7 +526,7 @@ def paginas_processo(cliente_nome, ini, fim, cod_processo, processo, base_talhao
 
         # ---- textos de análise (por talhão, embaixo do respectivo mapa) ----
         celulas_txt = [
-            textos_talhao(cod_processo, t, dados_cliente.rotulo_talhao(t), variacao, clima, plantio)
+            textos_talhao(cod_processo, t, dados_cliente.rotulo_talhao(t), variacao, clima, plantio, escolha)
             for t in grupo["Talhão"]
         ]
         tb_txt = Table([celulas_txt], colWidths=[278 * mm] if unico else [139 * mm, 139 * mm])
@@ -537,7 +548,7 @@ def paginas_processo(cliente_nome, ini, fim, cod_processo, processo, base_talhao
         story.append(Paragraph(
             "Médias só no estado Efetivo e só entre equipamentos que têm o dado (0/-1 = sem dado); indicadores por ha ponderados pela área. "
             "Variação = dispersão típica (robusta, ignora picos isolados) em relação à média: baixa &lt;5% (verde), moderada 5–10% (laranja), alta &gt;10% (vermelho). "
-            "Mapas (só estado Efetivo): indicador(es) escolhido(s) para o grupo de operação; sem escolha, velocidade ou, havendo, densidade de plantio, produtividade, taxa de sólidos ou vazão (cinza = equipamento sem dado). Azul = valor menor, vermelho = valor maior.",
+            "Mapas e indicadores específicos (só estado Efetivo): com indicador(es) escolhido(s) para o grupo de operação, só eles aparecem (sementes, taxa, produtividade, vazão); sem escolha, velocidade ou, havendo, densidade de plantio, produtividade, taxa de sólidos ou vazão (cinza = equipamento sem dado). Azul = valor menor, vermelho = valor maior.",
             STYLE_TXT_NOTA,
         ))
         if idx < len(linhas) - 1:
@@ -574,14 +585,14 @@ def _tem(base, col):
     return col in base.columns and base[col].notna().any()
 
 
-def tabelas_resumo_processo(cod, base, variacao, clima, plantio):
+def tabelas_resumo_processo(cod, base, variacao, clima, plantio, escolha=None):
     """Lista de (título, [(cabeçalho, unidade, função(linha)->texto)]) conforme os
     dados que o processo tem."""
     area = ("ÁREA", "ha", lambda r: numero(r["Área operacional (ha)"], 1))
     vel = ("VELOCIDADE MÉDIA", "km/h", lambda r: numero(r.get("Velocidade média"), 2))
     tabelas = []
 
-    if _tem(base, "Vazão de calda"):
+    if _tem(base, "Vazão de calda") and especifico_liberado("Vazão de calda", escolha):
         tabelas.append(("APLICAÇÃO — VAZÃO E PRESSÃO", [
             area,
             ("VAZÃO MÉDIA", "L/ha", lambda r: numero(r.get("Vazão de calda"), 1)),
@@ -592,7 +603,7 @@ def tabelas_resumo_processo(cod, base, variacao, clima, plantio):
             ("TEMPERATURA > 35°C", "% do tempo", lambda r: _clima_pct(clima, cod, r["Talhão"], "% tempo temp. > 35")),
             ("UMIDADE RELATIVA < 45%", "% do tempo", lambda r: _clima_pct(clima, cod, r["Talhão"], "% tempo umidade < 45")),
         ]))
-    if _tem(base, "Taxa de aplicação (sólido)"):
+    if _tem(base, "Taxa de aplicação (sólido)") and especifico_liberado("Taxa de aplicação (sólido)", escolha):
         tabelas.append(("APLICAÇÃO DE SÓLIDOS — TAXA", [
             area, vel,
             ("TAXA DE SÓLIDOS", "kg/ha", lambda r: numero(r.get("Taxa de aplicação (sólido)"), 1)),
@@ -600,14 +611,14 @@ def tabelas_resumo_processo(cod, base, variacao, clima, plantio):
             ("VENTO MÉDIO", "km/h", lambda r: numero(r.get("Velocidade do vento média"), 1)),
             ("VENTO > 15 km/h", "% do tempo", lambda r: _clima_pct(clima, cod, r["Talhão"], "% tempo vento > 15")),
         ]))
-    if plantio and _tem(base, "Densidade de plantio"):
+    if (plantio if escolha is None else especifico_liberado("Densidade de plantio", escolha)) and _tem(base, "Densidade de plantio"):
         tabelas.append(("PLANTIO — SEMENTES", [
             area,
             ("SEMENTES MÉDIA", "sem./ha", lambda r: numero(r.get("Densidade de plantio"), 0)),
             ("VARIAÇÃO DAS SEMENTES", "", lambda r: _variacao_txt(variacao, cod, r["Talhão"], "Densidade de plantio")),
             vel,
         ]))
-    if _tem(base, "Rendimento de colheita"):
+    if _tem(base, "Rendimento de colheita") and especifico_liberado("Rendimento de colheita", escolha):
         tabelas.append(("COLHEITA — PRODUTIVIDADE", [
             area,
             ("PRODUTIVIDADE MÉDIA", "sc/ha", lambda r: numero(r.get("Rendimento de colheita"), 1)),
@@ -617,7 +628,7 @@ def tabelas_resumo_processo(cod, base, variacao, clima, plantio):
 
 
 def pagina_resumo_processo(cliente_nome, ini, fim, cod, base, variacao, clima, dados_cliente):
-    tabelas = tabelas_resumo_processo(cod, base, variacao, clima, dados_cliente.processo_eh_plantio(cod))
+    tabelas = tabelas_resumo_processo(cod, base, variacao, clima, dados_cliente.processo_eh_plantio(cod), escolha_do_processo(dados_cliente, cod))
     if not tabelas:
         return []
     story = [header(cliente_nome, f"Período: {ini} a {fim}",
@@ -708,9 +719,17 @@ def construir_pdf(caminho_csv=None):
         nome = dados_cliente.rotulo_equip(cod)
         return str(cod) if nome == str(cod) else f"{cod} - {nome}"
 
+    # ---- área trabalhada (opcional): Excel à parte "area_trabalhada.xlsx" na raiz ----
+    dados_area = None
+    if secoes is not None and carregar_opcoes_relatorio().get("area_trabalhada", True):
+        import area_trabalhada as _at
+        if Path(_at.NOME_ARQUIVO).exists():
+            dados_area = _at.carregar(_at.NOME_ARQUIVO)
+            if dados_area is not None:
+                _at.aplicar_operacao(secoes, dados_area, rotulo_proc)
+
     comparacao = None
     if secoes is not None:
-        from opcoes_mapa import carregar_opcoes_relatorio
         _o = carregar_opcoes_relatorio()
         _usa_op = bool(_o.get("comparar_metas_operacao", _o.get("comparar_metas")))
         _usa_eq = bool(_o.get("comparar_metas_equipamentos", _o.get("comparar_metas")))
@@ -730,16 +749,19 @@ def construir_pdf(caminho_csv=None):
                     print(f"  AVISO: falha ao comparar com metas ({type(e).__name__}: {e}) — relatório sem comparação.")
     analise, usar_ia = None, False
     if secoes is not None:
-        usar_ia = bool(analise_ia._ler_chave())
-        if usar_ia:
+        quer_ia = carregar_opcoes_relatorio().get("usar_ia", True)
+        usar_ia = bool(quer_ia) and bool(analise_ia._ler_chave())
+        if not quer_ia:
+            print("Interpretação por IA desativada — o PDF sairá sem textos de IA.")
+        elif usar_ia:
             print("Gerando análise de IA (Gemini)...")
             analise = analise_ia.gerar_analise(secoes, CLIENTE_NOME, rotulo_proc, rotulo_equip, ARQUIVO_ENTRADA.parent, comparacao=comparacao)
-        else:
+        if quer_ia and not usar_ia:
             print("Aviso: GEMINI_API_KEY não configurada — o PDF sairá sem as páginas de IA.")
 
     story = []
     if secoes is not None:
-        story.extend(sec.pagina_resumo_executivo(CLIENTE_NOME, ini, fim, secoes, analise, rotulo_proc, comparacao))
+        story.extend(sec.pagina_resumo_executivo(CLIENTE_NOME, ini, fim, secoes, analise, rotulo_proc, comparacao, com_ia=usar_ia))
     else:
         story.extend(pagina_resumo_geral(CLIENTE_NOME, ini, fim, resumo_processo, resumo_talhao, dados_cliente))
     story.append(PageBreak())
@@ -754,6 +776,8 @@ def construir_pdf(caminho_csv=None):
                 story.append(PageBreak())
         if cod in codigos_talhao:
             base_talhao = resumo_talhao[resumo_talhao["Código processo"] == cod].copy()
+            if dados_area is not None:
+                _at.aplicar_talhoes(base_talhao, cod, dados_area, dados_cliente, rotulo_proc)
             processo = base_talhao["Processo"].iloc[0]
             imagens_por_talhao = {t: c for (op, t), c in imagens_por_chave.items() if op == cod}
             resumo_pg = pagina_resumo_processo(CLIENTE_NOME, ini, fim, cod, base_talhao, variacao, clima, dados_cliente)

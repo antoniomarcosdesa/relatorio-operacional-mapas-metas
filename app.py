@@ -61,6 +61,29 @@ elif quer_metas:
 
 # ---- opcional: indicador(es) dos mapas por grupo de operação ----
 opcoes_mapa = {}
+# ---- opcional: interpretação por IA (Gemini) ----
+usar_ia = st.checkbox(
+    "Usar IA para interpretação",
+    value=True,
+    help="Marcado: o relatório inclui as análises e a leitura executiva geradas pela IA (Gemini). "
+         "Desmarcado: o relatório sai só com os dados, sem textos de IA (e sem usar a cota do Gemini).",
+)
+
+# ---- opcional: incluir a área trabalhada (sem sobreposição) a partir de um Excel à parte ----
+quer_area = st.checkbox(
+    "Incluir área trabalhada (sem sobreposição)",
+    value=False,
+    help="A área do relatório é a área operacional (com sobreposição). Anexe o Excel exportado com a área trabalhada "
+         "para mostrá-la no total do processo e por talhão.",
+)
+area_bytes = None
+if quer_area:
+    arq_area = st.file_uploader("Excel de área trabalhada (.xlsx)", type=["xlsx"], key="area_trab")
+    if arq_area is None:
+        st.warning("Anexe o Excel de área trabalhada, ou desmarque a opção.")
+    else:
+        area_bytes = arq_area.getvalue()
+
 with st.expander("Opções de mapa (opcional)"):
     st.caption(
         "Escolha, por grupo de operação, qual indicador aparece nos mapas. "
@@ -89,7 +112,7 @@ if st.button("Gerar relatório", type="primary", disabled=arquivo is None):
         linhas.append(msg)
 
     with st.spinner("Gerando o relatório... (pode levar alguns minutos)"):
-        ok, msg, pdf = gerar_relatorio(arquivo.getvalue(), cliente, enviar, log, opcoes_mapa, comparar_metas)
+        ok, msg, pdf = gerar_relatorio(arquivo.getvalue(), cliente, enviar, log, opcoes_mapa, comparar_metas, area_bytes, usar_ia)
     (st.success if ok else st.error)(msg)
     if pdf:
         st.download_button("Baixar PDF", data=pdf[1], file_name=pdf[0], mime="application/pdf")

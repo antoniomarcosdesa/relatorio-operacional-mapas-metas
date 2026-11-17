@@ -287,6 +287,53 @@ class DadosCliente:
         except Exception as e:
             print(f"  AVISO: não consegui ler o par {yms.name}/{ymx.name}: {e}")
 
+    # ---- MBTiles vetorial (.mbtiles, ex.: fields.mbtiles / info.mbtiles) --------------
+    def _ler_mbtiles(self, caminho: Path):
+        """Lê um .mbtiles VETORIAL (tiles .pbf) com os campos FAZENDA, ZONA, TALHAO, DESC_TALHA...
+        Usa o zoom máximo, junta os pedaços de cada talhão (os tiles cortam os polígonos) e
+        grava descrição + contorno. MBTiles raster (imagem) não tem atributos e é ignorado."""
+        import gzip
+        import math
+        import sqlite3
+        try:
+            con = sqlite3.connect(f"file:{caminho}?mode=ro", uri=True)
+            meta = dict(con.execute("select name, value from metadata"))
+            if str(meta.get("format", "")).lower() != "pbf":
+                print(f"  AVISO: {caminho.name} não é MBTiles vetorial (format={meta.get('format')}) — ignorado.")
+                return
+            zmax = con.execute("select max(zoom_level) from tiles").fetchone()[0]
+            pedacos = {}  # chave -> [anéis (lon,lat) de cada pedaço]
+            descs = {}
+            for col, row, dado in con.execute("select tile_column, tile_row, tile_data from tiles where zoom_level=?", (zmax,)):
+                try:
+                    dado = gzip.decompress(dado)
+                except Exception:
+                    pass
+                y_xyz = (1 << zmax) - 1 - row
+                for attrs, aneis in _decodificar_mvt(dado, zmax, col, y_xyz):
+                    a = {_norm(k): v for k, v in attrs.items()}
+                    tal = a.get("talhao", "")
+                    if tal in ("", None):
+                        continue
+                    chave = chave_talhao(a.get("fazenda", ""), a.get("zona", ""), tal)
+                    d = _limpa(a.get("desc_talha") or a.get("desc_talhao") or "")
+                    if d:
+                        descs[chave] = d
+                    pedacos.setdefault(chave, []).extend(aneis)
+            con.close()
+        except Exception as e:
+            print(f"  AVISO: não consegui ler {caminho.name}: {e}")
+            return
+        n = 0
+        for chave, aneis in pedacos.items():
+            if chave in self.poligonos_chave:
+                continue  # já veio de outro arquivo (ex.: fields + info idênticos)
+            self.poligonos_chave[chave] = _unir_pedacos(aneis)
+            if chave in descs:
+                self.talhoes[chave] = descs[chave]
+            n += 1
+        print(f"  MBTiles   ({caminho.name}): {n} talhão(ões) com fazenda+zona+talhão, descrição e contorno")
+
     # ---- KML -------------------------------------------------------
     def _ler_kml(self, caminho: Path):
         try:
@@ -333,6 +380,119 @@ class DadosCliente:
         print(f"  KML       ({caminho.name}): {n} polígono(s) de talhão")
 
 
+
+# ---- decodificador mínimo de Mapbox Vector Tile (sem dependências) ----------------
+def _varint(b, i):
+    r = sh = 0
+    while True:
+        x = b[i]; i += 1
+        r |= (x & 0x7F) << sh
+        if x < 0x80:
+            return r, i
+        sh += 7
+
+
+def _campos_pb(b):
+    i, n = 0, len(b)
+    while i < n:
+        k, i = _varint(b, i)
+        f, w = k >> 3, k & 7
+        if w == 0:
+            v, i = _varint(b, i)
+        elif w == 2:
+            ln, i = _varint(b, i)
+            v = b[i:i + ln]; i += ln
+        elif w == 1:
+            v = b[i:i + 8]; i += 8
+        elif w == 5:
+            v = b[i:i + 4]; i += 4
+        else:
+            raise ValueError("wire type inválido")
+        yield f, w, v
+
+
+def _pacote(b):
+    i, out = 0, []
+    while i < len(b):
+        v, i = _varint(b, i)
+        out.append(v)
+    return out
+
+
+def _decodificar_mvt(dado, z, tx, ty):
+    """Gera (atributos, [anéis exteriores em (lon,lat)]) de cada polígono do tile."""
+    import math
+    import struct
+    for f, w, camada in _campos_pb(dado):
+        if f != 3:
+            continue
+        chaves, valores, feats, extent = [], [], [], 4096
+        for ff, ww, v in _campos_pb(camada):
+            if ff == 2:
+                feats.append(v)
+            elif ff == 3:
+                chaves.append(v.decode("utf-8"))
+            elif ff == 4:
+                val = None
+                for f3, w3, x in _campos_pb(v):
+                    if f3 == 1: val = x.decode("utf-8")
+                    elif f3 == 2: val = struct.unpack("<f", x)[0]
+                    elif f3 == 3: val = struct.unpack("<d", x)[0]
+                    elif f3 in (4, 5): val = x
+                    elif f3 == 6: val = (x >> 1) ^ -(x & 1)
+                    elif f3 == 7: val = bool(x)
+                valores.append(val)
+            elif ff == 5:
+                extent = v
+        for fb in feats:
+            tags, tipo, geom = [], 0, []
+            for f2, w2, v in _campos_pb(fb):
+                if f2 == 2: tags = _pacote(v)
+                elif f2 == 3: tipo = v
+                elif f2 == 4: geom = _pacote(v)
+            if tipo != 3:
+                continue
+            attrs = {chaves[tags[k]]: valores[tags[k + 1]] for k in range(0, len(tags) - 1, 2)}
+            aneis, atual, x = [], [], 0
+            y, i = 0, 0
+            while i < len(geom):
+                cmd, cnt = geom[i] & 7, geom[i] >> 3; i += 1
+                if cmd in (1, 2):
+                    for _ in range(cnt):
+                        dx, dy = geom[i], geom[i + 1]; i += 2
+                        x += (dx >> 1) ^ -(dx & 1); y += (dy >> 1) ^ -(dy & 1)
+                        atual.append((x, y))
+                elif cmd == 7:
+                    if len(atual) >= 3:
+                        aneis.append(atual)
+                    atual = []
+            saida = []
+            for a in aneis:
+                area = sum(a[k][0] * a[(k + 1) % len(a)][1] - a[(k + 1) % len(a)][0] * a[k][1] for k in range(len(a)))
+                if area <= 0:
+                    continue  # buracos (sentido oposto) são ignorados
+                ring = []
+                for px, py in a:
+                    xx = (tx + px / extent) / (1 << z)
+                    yy = (ty + py / extent) / (1 << z)
+                    ring.append((xx * 360.0 - 180.0, math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * yy))))))
+                saida.append(ring)
+            if saida:
+                yield attrs, saida
+
+
+def _unir_pedacos(aneis):
+    """Une os pedaços de um talhão cortados pelos tiles (shapely, se disponível)."""
+    try:
+        from shapely.geometry import Polygon
+        from shapely.ops import unary_union
+        u = unary_union([Polygon(a).buffer(0) for a in aneis if len(a) >= 3])
+        polys = [u] if u.geom_type == "Polygon" else list(getattr(u, "geoms", []))
+        return [list(p.exterior.coords) for p in polys if p.geom_type == "Polygon"]
+    except Exception:
+        return aneis
+
+
 def carregar_cliente(pasta=PASTA_CLIENTE) -> DadosCliente:
     dados = DadosCliente()
     pasta = Path(pasta)
@@ -341,7 +501,7 @@ def carregar_cliente(pasta=PASTA_CLIENTE) -> DadosCliente:
         return dados
     print("Dados do cliente (pasta 'cliente'):")
     excels = [p for p in sorted(pasta.glob("*.xlsx"))
-              if not p.name.startswith("~$") and not p.name.lower().startswith("metas")]
+              if not p.name.startswith("~$") and not p.name.lower().startswith(("metas", "area_trabalhada"))]
     kmls = sorted(pasta.glob("*.kml"))
     geojsons = sorted(list(pasta.glob("*.geojson")) + list(pasta.glob("*.json")))
     for yms in sorted(pasta.glob("*.yms")):
@@ -349,6 +509,10 @@ def carregar_cliente(pasta=PASTA_CLIENTE) -> DadosCliente:
         if ymx.exists():
             dados._ler_yms_ymx(yms, ymx)
     temmapa = bool(list(pasta.glob("*.yms")))
+    mbt = sorted(pasta.glob("*.mbtiles"))
+    for m in mbt:
+        dados._ler_mbtiles(m)
+    temmapa = temmapa or bool(mbt)
     for gj in geojsons:  # primeiro: descrição/contorno dos talhões; o Excel complementa (frota, processos)
         dados._ler_geojson(gj)
     for x in excels:

@@ -295,24 +295,29 @@ def _fmt(v, tipo):
     return numero(v, 2 if tipo == "n2" else 1)
 
 
-def card_area(area, dias, n_equip, meta=None):
+def card_area(area, dias, n_equip, meta=None, trab=None, sob=None):
     linha = Paragraph(f"<b>{numero(area, 0)}</b> <font size='11'>ha</font>",
                       ParagraphStyle("cv", parent=STYLE_BODY, fontSize=28, leading=31))
     sub = Paragraph(f"{inteiro(dias)} dia(s) com dados · {inteiro(n_equip)} equipamento(s)", STYLE_SMALL)
     extra = []
+    if trab is not None and not pd.isna(trab):
+        txt = f"Área trabalhada (sem sobreposição): <b>{numero(trab, 1)} ha</b>"
+        if sob is not None and not pd.isna(sob):
+            txt += f" · sobreposição <b>{numero(sob, 1)}%</b>"
+        extra += [Spacer(1, 1.5 * mm), Paragraph(txt, ParagraphStyle("ct", parent=STYLE_SMALL, fontSize=9.5, leading=11))]
     if meta is not None:
         esperado = meta.get("Meta 7 dias")
         if esperado is not None and not pd.isna(esperado) and esperado > 0:
             pct = area / esperado * 100
             dif = area - esperado
             st = "OK" if dif >= 0 else "ABAIXO DA META"
-            extra = [Spacer(1, 1.5 * mm), Paragraph(
+            extra += [Spacer(1, 1.5 * mm), Paragraph(
                 f"Meta do período: <b>{numero(esperado, 0)} ha</b> · <b>{numero(pct, 0)}%</b> concluído · "
                 f"<font color='{_cor_status(st)}'><b>{_seta(dif, st)} {'+' if dif > 0 else ''}{numero(dif, 0)} ha</b></font>",
                 ParagraphStyle("cm", parent=STYLE_SMALL, fontSize=9.5, leading=11))]
     conteudo = [Paragraph("ÁREA REALIZADA (TOTAL)", ParagraphStyle("ct", parent=STYLE_SMALL, fontName="Helvetica-Bold", fontSize=10.5, textColor=TEXTO_SECUNDARIO)),
                 Spacer(1, 2 * mm), linha, Spacer(1, 2 * mm), sub] + extra
-    tb = Table([[conteudo]], colWidths=[150 * mm], rowHeights=[34 * mm if extra else 30 * mm])
+    tb = Table([[conteudo]], colWidths=[150 * mm], rowHeights=[(30 + 4.5 * (len(extra) // 2)) * mm])
     tb.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), FUNDO_CARD), ("BOX", (0, 0), (-1, -1), 0.8, BORDA),
         ("LINEABOVE", (0, 0), (-1, 0), 1.6, VERDE),
@@ -408,7 +413,7 @@ def pagina_operacao(cliente, ini, fim, rotulo, r, diario_proc, caminho_png, lk=N
     area_row = lk.get("Área por dia")
     meta_dia = area_row.get("Meta diária operação") if area_row is not None else None
     grafico, stats = criar_grafico(diario_proc, caminho_png, meta_dia)
-    esq = [[card_area(r.get("Área operacional (ha)"), r.get("Dias com dados"), r.get("Equipamentos"), area_row)], [Spacer(1, 2 * mm)]]
+    esq = [[card_area(r.get("Área operacional (ha)"), r.get("Dias com dados"), r.get("Equipamentos"), area_row, r.get("Área trabalhada (ha)"), r.get("Sobreposição (%)"))], [Spacer(1, 2 * mm)]]
     if grafico:
         esq.append([Image(str(grafico), width=150 * mm, height=60 * mm)])
         faixa = faixa_resumo_grafico(stats, meta_dia)
@@ -585,11 +590,12 @@ def pagina_ia(cliente, ini, fim, rotulo, item, com_metas=False):
 # PÁGINA INICIAL — RESUMO EXECUTIVO DA FAZENDA
 # ------------------------------------------------------------
 
-def pagina_resumo_executivo(cliente, ini, fim, secoes, analise, rotulo_proc, comparacao=None):
+def pagina_resumo_executivo(cliente, ini, fim, secoes, analise, rotulo_proc, comparacao=None, com_ia=True):
     op, eq = secoes["Operacao"], secoes["Equipamentos_Op"]
     story = [header(cliente, f"Período: {ini} a {fim}", "RESUMO EXECUTIVO DA OPERAÇÃO"), Spacer(1, 4 * mm)]
     geral = (analise or {}).get("resumo_geral") or ("Resumo dos processos realizados no período, comparados com as metas operacionais." if comparacao else "Resumo dos processos realizados no período, com dados realizados (sem metas).")
-    story += [caixa_ia("Leitura executiva da fazenda", geral, 278 * mm, altura=27 * mm, tamanho=12), Spacer(1, 3 * mm)]
+    if com_ia:
+        story += [caixa_ia("Leitura executiva da fazenda", geral, 278 * mm, altura=27 * mm, tamanho=12), Spacer(1, 3 * mm)]
 
     n_eq = eq["Equipamento (código)"].nunique() if not eq.empty else op["Equipamentos"].sum()
     cards = [caixa_ia("PROCESSOS ANALISADOS", inteiro(len(op)), 66 * mm, altura=22 * mm, tamanho=15),
@@ -602,14 +608,17 @@ def pagina_resumo_executivo(cliente, ini, fim, secoes, analise, rotulo_proc, com
                             ("VALIGN", (0, 0), (-1, -1), "TOP")]))
     story += [ct, Spacer(1, 3 * mm)]
 
-    rows = [[Paragraph(t, STYLE_TABLE_HEAD) for t in ("PROCESSO", "ÁREA", "EQUIP.", "HORAS", "RESUMO")]]
+    cab = ("PROCESSO", "ÁREA", "EQUIP.", "HORAS", "RESUMO") if com_ia else ("PROCESSO", "ÁREA", "EQUIP.", "HORAS")
+    rows = [[Paragraph(t, STYLE_TABLE_HEAD) for t in cab]]
     for _, r in op.iterrows():
         rot = rotulo_proc(int(r["Código processo"]))
         leitura = texto_seguro(processo_ia(analise, rot).get("resumo_executivo", ""))
-        rows.append([Paragraph(f"<b>{rot}</b>", STYLE_BODY), Paragraph(f"{numero(r['Área operacional (ha)'], 1)} ha", STYLE_BODY),
+        rows.append([Paragraph(f"<b>{rot}</b>", STYLE_BODY), Paragraph(f"{numero(r['Área operacional (ha)'], 1)} ha" + (
+                         f"<br/><font size='7.5' color='#64748B'>trab. {numero(r['Área trabalhada (ha)'], 1)} ha</font>"
+                         if "Área trabalhada (ha)" in r.index and not pd.isna(r["Área trabalhada (ha)"]) else ""), STYLE_BODY),
                      Paragraph(inteiro(r["Equipamentos"]), STYLE_CENTER), Paragraph(f"{numero(r['Tempo total (h)'], 1)} h", STYLE_CENTER),
-                     Paragraph(leitura or "Sem análise de IA disponível.", ParagraphStyle("fgrow", parent=STYLE_BODY, fontSize=9.5, leading=11))])
-    tb = Table(rows, colWidths=[65 * mm, 27 * mm, 22 * mm, 24 * mm, 140 * mm], repeatRows=1)
+                     ] + ([Paragraph(leitura or "Sem análise de IA disponível.", ParagraphStyle("fgrow", parent=STYLE_BODY, fontSize=9.5, leading=11))] if com_ia else []))
+    tb = Table(rows, colWidths=[65 * mm, 27 * mm, 22 * mm, 24 * mm, 140 * mm] if com_ia else [110 * mm, 60 * mm, 54 * mm, 54 * mm], repeatRows=1)
     tb.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), FUNDO_TABELA_HEAD), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [BRANCO, FUNDO_CARD]),
         ("LINEBELOW", (0, 0), (-1, -1), 0.35, BORDA), ("GRID", (0, 0), (-1, -1), 0.25, BORDA),
@@ -617,7 +626,7 @@ def pagina_resumo_executivo(cliente, ini, fim, secoes, analise, rotulo_proc, com
         ("RIGHTPADDING", (0, 0), (-1, -1), 2 * mm), ("TOPPADDING", (0, 0), (-1, -1), 1.3 * mm),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 1.3 * mm), ("ALIGN", (1, 1), (3, -1), "CENTER"),
     ]))
-    barra = Table([[Paragraph("VISÃO DOS PROCESSOS", STYLE_SECTION)], [Paragraph("Principais resultados e leitura executiva gerada pela IA.", STYLE_SMALL)]],
+    barra = Table([[Paragraph("VISÃO DOS PROCESSOS", STYLE_SECTION)], [Paragraph("Principais resultados e leitura executiva gerada pela IA." if com_ia else "Principais resultados do período.", STYLE_SMALL)]],
                   colWidths=[278 * mm])
     barra.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), FUNDO_CARD_ALT), ("LEFTPADDING", (0, 0), (-1, -1), 3.5 * mm),
                                ("TOPPADDING", (0, 0), (-1, -1), 2 * mm), ("BOTTOMPADDING", (0, 0), (-1, -1), 2 * mm)]))

@@ -7,7 +7,7 @@
 #
 # Mesma filosofia do processar_dados.py original:
 #   - área operacional só entra no relatório se > área mínima (aqui,
-#     por TALHÃO dentro de cada processo, conforme pedido: > 20 ha);
+#     por TALHÃO dentro de cada processo, conforme pedido: > 5 ha);
 #   - indicadores de qualidade operacional são médias ponderadas
 #     pelo tempo de cada leitura, calculadas só no estado EFETIVO
 #     (cd_estado == "E"), que é o equivalente a "TRABALHANDO" no
@@ -58,7 +58,7 @@ from leitura_csv import ler_csv_bruto, parse_datas
 # CONFIGURAÇÃO
 # ------------------------------------------------------------
 
-AREA_MINIMA_TALHAO = 20.0  # ha — regra pedida: só entra talhão com > 20 ha no período
+AREA_MINIMA_TALHAO = 5.0  # ha — regra pedida: só entra talhão com > 5 ha no período
 
 # Limiares de alerta de temperatura do motor (°C) — contados por processo
 # (somando todos os talhões que entram no relatório daquele processo),
@@ -323,7 +323,7 @@ def gerar_resumo_processo_talhao(df: pd.DataFrame) -> pd.DataFrame:
 
         area = efetivo["area_ha"].sum()
         if area <= AREA_MINIMA_TALHAO:
-            continue  # regra: só talhões com > 20 ha no período, por processo
+            continue  # regra: só talhões com > 5 ha no período, por processo
 
         dias = grupo.loc[grupo["dt_hr_local_inicial"].notna(), "dt_hr_local_inicial"].dt.date.nunique()
         equipamentos = sorted(grupo["cd_equipamento"].dropna().unique().tolist())
@@ -392,7 +392,7 @@ def gerar_resumo_processo(resumo_talhao: pd.DataFrame, df: pd.DataFrame) -> pd.D
         registro = {
             "Código processo": cod_processo,
             "Processo": rotulo_processo(cod_processo),
-            "Talhões (>20 ha)": len(grupo_resumo),
+            "Talhões (>5 ha)": len(grupo_resumo),
             "Área operacional (ha)": round(area_total, 2),
             "Equipamentos": grupo_bruto["cd_equipamento"].nunique(),
             "Horas efetivas (h)": round(horas_efetivas, 2),

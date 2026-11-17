@@ -37,7 +37,7 @@ CMAP_VERDES = LinearSegmentedColormap.from_list(
 
 RE_COORD = re.compile(r"(-?\d+\.\d+)\s+(-?\d+\.\d+)")
 
-AREA_MINIMA_TALHAO = 20.0  # ha — mesma regra do restante do pipeline
+AREA_MINIMA_TALHAO = 5.0  # ha — mesma regra do restante do pipeline
 
 # Verde mais escuro = velocidade menor; verde mais claro = velocidade maior.
 PALETA_VERDE = LinearSegmentedColormap.from_list("verde_vel", ["#05431F", "#2E8B4F", "#7ECF95", "#C2F0CD"])

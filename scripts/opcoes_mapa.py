@@ -112,3 +112,42 @@ def carregar_opcoes_relatorio(pasta=".") -> dict:
     except Exception as e:  # noqa: BLE001
         print(f"  AVISO: {ARQUIVO_OPCOES_RELATORIO} inválido ({e}) — ignorado.")
         return {}
+
+
+# Indicadores "específicos" do relatório (coluna/bloco só aparece quando fizer sentido):
+# chave da escolha -> nomes das colunas/indicadores que ela libera.
+INDICADORES_ESPECIFICOS = {
+    "SEMENTES": ("Densidade de plantio",),
+    "TAXA": ("Taxa de aplicação (sólido)", "Taxa de aplicação"),
+    "MASSA": ("Rendimento de colheita", "Umidade dos grãos"),
+    "VAZAO": ("Vazão de calda", "Pressão da bomba"),
+}
+
+
+def escolha_do_processo(cliente, cod, opcoes=None):
+    """Indicadores escolhidos (set de chaves) para o grupo do processo, ou None = modo AUTOMÁTICO.
+    Com escolha, o relatório inteiro (tabelas, resumos, textos) só traz os indicadores
+    específicos escolhidos (sementes, taxa, produtividade, vazão); sem escolha vale a regra
+    automática de sempre (mostra o que tiver dado)."""
+    if opcoes is None:
+        opcoes = _opcoes_em_cache()
+    escolhidos = opcoes.get(cliente.grupo_processo(cod), [])
+    return set(escolhidos) if escolhidos else None
+
+
+def especifico_liberado(nome, escolha):
+    """True se o indicador específico `nome` pode aparecer. `escolha` None = automático (libera).
+    Indicadores que não são específicos (velocidade, RPM, consumo...) sempre passam."""
+    todos = {n for v in INDICADORES_ESPECIFICOS.values() for n in v}
+    if escolha is None or nome not in todos:
+        return True
+    return any(nome in INDICADORES_ESPECIFICOS[k] for k in escolha if k in INDICADORES_ESPECIFICOS)
+
+
+_CACHE_OPCOES = {}
+
+
+def _opcoes_em_cache():
+    if "v" not in _CACHE_OPCOES:
+        _CACHE_OPCOES["v"] = carregar_opcoes()
+    return _CACHE_OPCOES["v"]

@@ -33,7 +33,7 @@ def _rodar(script, args, cwd, log):
     return proc.returncode == 0
 
 
-def gerar_relatorio(csv_bytes: bytes, cliente: str, enviar_telegram: bool, log=print, opcoes_mapa=None, comparar_metas=None):
+def gerar_relatorio(csv_bytes: bytes, cliente: str, enviar_telegram: bool, log=print, opcoes_mapa=None, comparar_metas=None, area_trabalhada_bytes=None, usar_ia=True):
     """Devolve (ok, mensagem, caminho_pdf_ou_None, bytes_pdf_ou_None)."""
     with tempfile.TemporaryDirectory(prefix="rel_") as tmp:
         tmp = Path(tmp)
@@ -44,10 +44,13 @@ def gerar_relatorio(csv_bytes: bytes, cliente: str, enviar_telegram: bool, log=p
             shutil.copy(arq, tmp / "cliente" / arq.name)
         if opcoes_mapa:  # {grupo: [indicadores]} escolhido no site (opcional)
             (tmp / "opcoes_mapa.json").write_text(json.dumps(opcoes_mapa, ensure_ascii=False), encoding="utf-8")
+        opcoes_rel = {"usar_ia": bool(usar_ia)}
         if comparar_metas:  # {"operacao": bool, "equipamentos": bool} — botão "Comparar com metas operacionais"
-            (tmp / "opcoes_relatorio.json").write_text(json.dumps({
-                "comparar_metas_operacao": bool(comparar_metas.get("operacao")),
-                "comparar_metas_equipamentos": bool(comparar_metas.get("equipamentos"))}), encoding="utf-8")
+            opcoes_rel["comparar_metas_operacao"] = bool(comparar_metas.get("operacao"))
+            opcoes_rel["comparar_metas_equipamentos"] = bool(comparar_metas.get("equipamentos"))
+        (tmp / "opcoes_relatorio.json").write_text(json.dumps(opcoes_rel), encoding="utf-8")
+        if area_trabalhada_bytes:  # Excel de área trabalhada (opcional), lido da raiz de trabalho
+            (tmp / "area_trabalhada.xlsx").write_bytes(area_trabalhada_bytes)
         csv = tmp / "dados_brutos" / "mapa_analitico.csv"
         csv.write_bytes(csv_bytes)
 
